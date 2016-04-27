@@ -1,0 +1,464 @@
+
+<h1>Run your ANTLR DSL as a Groovy Script</h1>
+<h2>Introduction</h2>
+<p>
+So your thinking on designing your own DSL or to use an existing grammar from ANTLR, but how do you execute it? That is what this tutorial is about.
+</p>
+<p>
+Groovy is great for building DSL's, but the expressiveness is limited to language features already included in the Groovy syntax. ANTLR offers a much larger set of language features that you can use. Just look at the language's already available at: <a href="https://github.com/antlr/grammars-v4" target="_blank">GitHub - ANTLR 4 Grammars</a>. 
+</p>
+<p>
+You could pick one grammar file, or two, modify them to your needs and rapidly create your DSL. One thing is missing though from all books and articles on DSL's with groovy and ANTLR, at least from the ones I've read, and that is, how to run a script written in your newly created DSL?
+</p>
+<p>
+With ANTLR, you can parse the script, but you'll need to write a Java or Groovy program with a main class to read in the file. This may be sufficient for certain use cases, for example when translating between two syntaxes, or when reading in a configuraiton file, or when you have a command language for your server, but in certain cases you just want the customers of your DSL to be able to use it as a 'real' language.
+</p>
+<p>
+In this article I will demonstrate how the powerful Groovy AST transformations can be used to execute a script written in a ANTLR grammar with a custom extension as a Groovy script.
+</p>
+<p>
+If you're new to Groovy DSL's and AST transformations I recommend to read the following articles as well:
+
+<ul>
+<li><a href="http://joesgroovyblog.blogspot.ch/2011/09/ast-transformations-compiler-phases-and.html" target="_blank">Joe's Groovy Blog on AST Transformations</a></li>
+<li><a href="http://groovy.codehaus.org/Global+AST+Transformations" target="_blank">Global AST Transformations</a></li>
+</ul>
+</p>
+
+<h2>Groovy Global AST Transformations</h2>
+<p>
+Groovy makes a distinction between a global and a local AST Transformation. A global AST Transformation is fired once and has the entire script, or SourceUnit, as scope. A local AST Transformation is fired when found and has the statement where it is found as scope. Global transformations are always executed when present on the classpath, every time the groovy compiler is invoked. Local transformations are only invoked when they are present in a script. Local transformations are useful when a single statement needs to be transformed. Global transformations are useful when the entire script needs to be transformed.
+</p>
+<p>
+In this example we will use global transformations. Global transformations have an extra cool feature: you can specify your own file extension. This feature will be used to specify a syntax with ANTLR, and then run it with Groovy.
+</p>
+
+<h2>Our DSL: the Cymbol language</h2>
+
+<p>
+Cymbol is a little language written by Terence Parr and published in his book: The Definitive ANTLR 4 Reference. Cymbol only contains the basic C-style syntax needed to write declarations and functions. It is a good point to start if you want to implement your own DSL with some extra features. The grammar file is available at GitHub: <a href="https://github.com/mquinn/ANTLR4/blob/master/book_code/examples/Cymbol.g4" target="_blank">Cymbol.g4</a>. This file is included in the <i>grammar</i> directory of the sample workspace.
+</p>
+<p>
+You can install the ANTLRWorks workbench, if you want to try the examples out for yourself. The workbench can be found at: <a href="http://tunnelvisionlabs.com/products/demo/antlrworks" target="_blank">Tunnel Vision Labs</a>. The ANTLR Workbench was used to generate the necessary classes to parse the DSL. This is however not necessary to run this example and all needed classes are already included in the attached workspace zip file.
+</p>
+<p>
+A sample Cymbol program could look as follows (taken from the ANTLR 4 Reference, p. 99):
+
+
+<pre class="brush:java">
+
+// Cymbol test
+
+int g = 9;               // a global variable
+
+int fact(int x) {       // a factorial function
+
+   if x==0 then return 1;
+
+   return x * fact(x-1);
+
+}
+
+</pre>
+</p>
+
+<h2>Set up the workspace</h2>
+
+<p>
+Eclipse is used as IDE. To start, you can download the Cymbol_workspace.zip file and import it in Eclipse. After that, you'll need to download a few libraries, the antlr_4.4_complete.jar, hamcrest_1.3.jar and junit_4.11.jar. Due to upload size limitations I couldn't include the libraries in the zip file. Links to the download sites are provided in the README.txt file in the libs directory of the Eclipse project. Add the libraries to the build path and the project set up is complete. Now you can execute <b>DslScriptTransformTest.java</b> as JUnit test and you should see some output in the console. What is going on behind the scenes here?
+</p>
+
+<h2>Generate the Parser</h2>
+
+<p>
+Open the Cymbol.g4 grammar file in the ANTLR Workbench. Go to:
+
+<pre class="brush:shell">Run > Generate Recognizer...</pre>
+
+Select the ouput directory, tick the boxes in front of <b>Generate Listener</b> and <b>Generate Visitor</b>. Don't forget to set the package to <b>com.cymbol.parser</b>. This will generate all classes that you'll need to parse a script written with your DSL's syntax. 
+</p>
+
+<h2>Create the ASTTransformation</h2>
+
+<p>
+The <i>DslScriptTransform.java</i> file contains the ASTTransformation.
+</p>
+<p>
+The transformation class needs to implement the ASTTransformation interface from Groovy. An AST Transformation is annotated with:
+
+
+<pre class="brush:java">
+@GroovyASTTransformation(phase = CompilePhase.SEMANTIC_ANALYSIS)
+</pre>
+
+This annotation tells the Groovy compiler that this class is an AST Transformation that should be applied in the specified phase. Global transformations can occur in any compiler phase so here are a few words on how to select the right phase.
+</p>
+<p>
+The Groovy compiler hase nine phases. Of these, only the second, third and fourth are relevant for us:
+
+<ol>
+<li><i>Initialization</i><br>The resources and environment are initialized.</li>
+<li><i>Parsing</i><br>The script text is parsed and a Concrete Syntax Tree (CST) is constructed according to the Groovy grammar.</li>
+<li><i>Conversion</i><br>The Astract Syntaxt Tree (AST) is constructed from the CST.</li>
+<li><i>Semantic Analysis</i><br>In this phase, the AST is checked, classes, static imports and variables are resolved. After this phase, the AST is complete and the input is seen as a valid source.</li>
+</ol>
+
+Our DSL script has been transformed into a Groovy script with one method: <i>getScriptText()</i>. In the semantic analysis phase, all necessary Groovy structures have been initialised and we can safely modify the AST. The only thing that needs to be done now is to implement the <i>run()</i> method to call the ANTLR Parser and parse the script text.
+</p>
+<p>
+First, we check whether the file has the required extension:
+
+<pre class="brush:java">
+@Override
+public void visit(ASTNode[] nodes, SourceUnit source) {
+	if(!source.getName().endsWith(".cymbol")) {
+		return;
+	}
+	...
+</pre>
+</p>
+<p>
+Second, the main class is retrieved from the AST:
+
+<pre class="brush:java">
+private ClassNode getMainClass(ModuleNode moduleNode) {
+	for(ClassNode classNode : moduleNode.getClasses()) {
+		if(classNode.getNameWithoutPackage().equals(moduleNode.getMainClassName())) {
+			return classNode;
+		}
+	}
+	return null;
+}
+</pre>
+
+And the run method's body is imlemented. The run method's body will look something like follows:
+
+<pre class="brush:java">
+@Override
+public Object run() {
+	DslScriptTransformHelper helper = new DslScriptTransformHelper();
+	String scriptText = this.getScriptText();
+	helper.parse(scriptText);
+}
+</pre>
+
+The <i>@Override</i> annotation is not actually there but is included here for clarity. The annotation could be added as well but it is left out to keep the example simple. The implementation is kept as minimal as possible because writing AST Transformations is rather cumbersome. As much as posisble is factored out into a delegate called DslScriptTransformHelper. The helper class contains the actual code to parse the DSL script and to do something with it. The benefit is that complex logic can be implemented that can be checked by the compiler and by your IDE.
+</p>
+<p>
+Third, the AST Transformation to implement the run method's body is as follows:
+
+<pre class="brush:java">
+private void addRunMethod(ClassNode scriptClass) {
+		
+	List<Statement> statements = new ArrayList<>();
+	
+	/*
+	 * initialise the parser helper:
+	 * 
+	 * DslScriptTransformHelper helper = new DslScriptTransformHelper()
+	 */
+	ClassNode helperClassNode = new ClassNode(DslScriptTransformHelper.class);
+	ConstructorCallExpression initParserHelper = new ConstructorCallExpression(helperClassNode, new ArgumentListExpression());
+	VariableExpression helperVar = new VariableExpression(HELPER_VAR, helperClassNode);
+	DeclarationExpression assignHelperExpr = new DeclarationExpression(helperVar, new Token(Types.EQUALS, "=", -1, -1), initParserHelper);
+	ExpressionStatement initHelperExpr = new ExpressionStatement(assignHelperExpr);
+	statements.add(initHelperExpr);
+	
+	/*
+	 * get the script text and assign it to a variable:
+	 * 
+	 * String scriptText = this.getScriptText()
+	 */
+	MethodCallExpression getScriptTextExpr = new MethodCallExpression(new VariableExpression("this"), new ConstantExpression(GET_SCRIPT_TEXT_METHOD), MethodCallExpression.NO_ARGUMENTS);
+	VariableExpression scriptTextVar = new VariableExpression(SCRIPT_TEXT_VAR, new ClassNode(String.class));
+	DeclarationExpression declareScriptTextExpr = new DeclarationExpression(scriptTextVar, new Token(Types.EQUALS, "=", -1, -1), getScriptTextExpr);
+	ExpressionStatement getScriptTextStmt = new ExpressionStatement(declareScriptTextExpr);
+	statements.add(getScriptTextStmt);
+	
+	/*
+	 * call the parse method on the helper:
+	 * 
+	 * helper.parse(scriptText)
+	 */
+	MethodCallExpression callParserExpr = new MethodCallExpression(helperVar, PARSE_METHOD, new ArgumentListExpression(new VariableExpression(SCRIPT_TEXT_VAR)));
+	ExpressionStatement callParserStmt = new ExpressionStatement(callParserExpr);
+	statements.add(callParserStmt);
+	
+	// implement the run method's body
+	BlockStatement methodBody = new BlockStatement(statements, new VariableScope());
+	MethodNode runMethod = scriptClass.getMethod(RUN_METHOD, new Parameter[0]);
+	runMethod.setCode(methodBody);
+}
+</pre>
+
+All the above is needed to implement three lines of code!
+</p>
+<p>
+Fifth, the DslScriptTransformHelper class contains a parse method that calls the ANTLR parser and then does something with the ParseTree returned by ANTLR. You will probably want a semantic model, and I included a visitor that can iterate over the model to do something with it. This bit is left unimplemented because it requires, a lot, of design and coding to get this right. Here is a simple example:
+
+<pre class="brush:java">
+public class DslScriptTransformHelper {
+	
+	public SemanticModel parse(String scriptText) throws IOException {
+		ANTLRInputStream is = new ANTLRInputStream(scriptText);
+		CymbolLexer lexer = new CymbolLexer(is);
+		CommonTokenStream tokens = new CommonTokenStream(lexer);
+		CymbolParser parser = new CymbolParser(tokens);
+		ParseTree tree = parser.file();
+		SemanticModel model = initSemanticModel(tree);
+		SemanticModelVisitor visitor = initVisitor();
+		visitor.visit(model);
+		return model;
+	}
+</pre>
+
+Here, the generated Lexer and Parser are called. If you would want to create your own DSL with ANTLR, you will have to modify the <i>DslScriptTransformHelper</i>. The AST Transformation, <i>DslScriptTransform</i>, need not be modified. As much logic is factored out of the AST Transformation as posisble into a helper class. As you will see in the next section, creating an AST Transformation is difficult, time consuming, error prone, and generally not something that you will enjoy doing. by factoring out behaviour into a helper you can write logic and still have IDE support, and Unit testability for your logic. All you need to do is to initialize the helper and call a method on the helper with the DSL script's text as argument.
+
+I included two interfaces that are left unimplemented: <i>SemanticModel</i> and <i>SemanticModelVisitor</i>. 
+
+<pre class="brush:java">	
+	private SemanticModel initSemanticModel(ParseTree tree) {
+		SemanticModel model = new SemanticModel() {
+
+			@Override
+			public void init(ParseTree tree) {
+				System.out.println("init: " + tree.toStringTree());
+			}
+			
+		};
+		
+		model.init(tree);
+		return model;
+	}
+</pre>
+
+<pre class="brush:java">	
+	private SemanticModelVisitor initVisitor() {
+		SemanticModelVisitor visitor = new SemanticModelVisitor() {
+			
+			@Override
+			public void visit(SemanticModel model) {
+				System.out.println("visit");
+			}
+		};
+		
+		return visitor;
+		
+	}
+	
+}
+</pre>
+
+The purpose of these is that the semantic model represents, well, your semantic model. This is so to say your domain model. In the design of your DSL, deciding on a semantic model is probably the most important activity. The semantic model models what the DSL <i>means</i>. The grammar specifies how to write a valid script, but the model specifies what it means. Think of it as follows: not all valid English sentences are meaningful. Martin Fowler discusses this in his book: <a href="http://martinfowler.com/books/dsl.html" target="_blank">Domain Specific Languages</a>. The visitor is included so that after you've constructed a valid semantic model, you can do something with it, if you want.
+</p>
+<p>
+As you can see from the above example, performing an AST Transformation is rather cumbersome, at least in Java. Surely Groovy offers something better? Groovy does, and there are several excellent examples on this available at: <a href="https://github.com/groovy/groovy-core/blob/master/src/test/org/codehaus/groovy/ast/builder/AstBuilderFromSpecificationTest.groovy" target="_blank">GitHub</a>. 
+</p>
+<p>
+To me, the major downside to using the Groovy Builder DSL to specify AST Transformations is that the types can't be checked. It is rather difficult to get everything right, especially without type checking. The Cymbol DSL implementation uses the Groovy compiler, but doesn't actually contain any Groovy code. I think that is a benefit because fiddling with compilers and AST's is difficult enough, even with strict typing and IDE support. The examples can be implemented in Groovy as well if you wish so.
+</p>
+
+<h2>Create the Groovy configuration for the AST Transformations</h2>
+
+<p>
+Groovy needs the following configuration files to know that an AST Transformation should be called, and that it should accept files with a custom extension. Two files must be added:
+
+<ul>
+<li>META-INF/services/org.codehaus.groovy.source.Extensions</li>
+</ul>
+
+The extension is just declared in the org.codehaus.groovy.source.Extensions file:
+
+<pre class="brush:java">
+.cymbol
+</pre>
+
+<ul>
+<li>META-INF/services/org.codehaus.groovy.transform.ASTTransformation</li>
+</ul>
+
+This file only contains the name with package of the class that contains the AST Transformation:
+
+<pre class="brush:java">
+com.dsl.transformation.DslScriptTransform
+</pre>
+</p>
+
+<h2>Create a Source Pre-Processor</h2>
+
+<p>
+Groovy supports custom compiler configurations. They are documented at: <a href="http://groovy.codehaus.org/Advanced+compiler+configuration" target="_blank">Advanced Compiler Configuration</a>. We will use a custom compiler configuration to create a source pre-processor that reads the source of a script, a Cymbol script in our case, and that modifies the source. This happens before the Groovy compiler tries to parse the source and thus can be used as a source pre-processor. The text of the source is wrapped in a String and a method that returns that string. The Cymbol example is transformed into the following Groovy script:
+
+<pre class="brush:java">
+String getScriptText() { 
+	return '''// Cymbol test
+
+int g = 9;               // a global variable
+
+int fact(int x) {       // a factorial function
+
+   if x==0 then return 1;
+
+   return x * fact(x-1);
+}''' 
+}
+</pre> 
+
+The method <i>getScriptText()</i> now returns the DSL script as string.
+</p>
+<p>
+The Groovy source pre-processor is implemented as follows. First, a custom CustomParserPlugin is created. The CustomParserPlugin extends the Groovy AntlrParserPlugin and overrides the parseCST() method. This method is similar to the following example from Guillaume Laforge: <a href="http://groovyconsole.appspot.com/script/3" target="_blank">Custom antlr parser plugin</a>. Here the example is taken a step further however by calling ANTLR's StringTemplate to operate on the entire source, instead of modifiying the Groovy source by remapping the bindings, as is done in Guillaume's example.
+
+<pre class="brush:java">
+public class CustomParserPlugin extends AntlrParserPlugin {
+
+	@Override
+	public Reduction parseCST(final SourceUnit sourceUnit, Reader reader) throws CompilationFailedException {
+		StringBuffer bfr = new StringBuffer();
+		int intValueOfChar;   
+		try {
+			while ((intValueOfChar = reader.read()) != -1) {        
+				bfr.append((char) intValueOfChar);    
+			}
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}    
+		String text = modifyTextSource(bfr.toString());
+		StringReader stringReader = new StringReader(text);
+		
+		SourceUnit modifiedSource = SourceUnit.create(sourceUnit.getName(), text);
+		
+		return super.parseCST(modifiedSource, stringReader);
+	}
+	
+	String modifyTextSource(String text) {
+		ST textAsStringConstant = new ST("String getScriptText() { return '''<text>''' }");
+		textAsStringConstant.add("text", text);
+		return textAsStringConstant.render();
+	}
+}
+</pre>
+
+A CompilerConfiguration is equipped with a ParserPluginFactory and we also create a custom implementation that returns our CustomParserPlugin:
+
+<pre class="brush:java">
+public class SourcePreProcessor extends ParserPluginFactory {
+	
+	@Override
+	public ParserPlugin createParserPlugin() {
+		return new CustomParserPlugin();
+	}
+
+}
+</pre>
+
+A CompilerConfiguration needs to be created with our implementation of the ParserPluginFactory. Several ways of doing this are available to us:
+
+<ul>
+<li>Use Groovy embedded (GroovyShell, GroovyScriptEngine, ...) and add a CompilerConfiguration</li>
+<li>Use the groovyc compiler with a <i>configscript</i></li>
+</ul>
+
+Both techniques will be presented. Embedded Groovy is used in the Unit test and the Groovy compiler with the configuration script is invoked from the command line.
+</p>
+
+
+<h2>Create a Unit test with embedded groovy</h2>
+
+<p>
+The Unit test simply evaluates the DSL script with a GroovyShell that has a custom CompilerConfiguration with our SourcePreProcessor:
+
+<pre class="brush:java">
+public class DslScriptTransformTest {
+	String scriptPath = "tests";
+	
+	@Test
+	public void testPreProcessor() throws CompilationFailedException, IOException {
+		String testScript = scriptPath + "/test1.cymbol";
+		File scriptFile = new File(testScript);
+		ParserPluginFactory ppf = new SourcePreProcessor();
+		CompilerConfiguration cc = new CompilerConfiguration();
+		cc.setPluginFactory(ppf);
+		Binding binding = new Binding();
+		GroovyShell shell = new GroovyShell(binding, cc);
+		shell.evaluate(scriptFile);
+	}
+}
+</pre>
+
+If you now call the <i>testPreProcessor()</i> method you should see some output on the console with the output from ANTLR's <i>tree.toStringTree()</i> method call and a message that the semantic models has been visited.
+</p>
+
+<h2>Create a compiler configuration script</h2>
+
+<p>
+First, a CompilerConfiguration is created with a custom ParserPluginFactory, and passed to the GroovyShell.
+</p>
+<p>
+Second, the groovyc compiler is invoked with the <i>--configscript</i> flag. The config script has a CompilerConfiguration injected before any files are compiled. The CompilerConfiguration is exposed as a variable named <i>configuration</i>. The compiler configuration script <i>config.groovy</i> looks as follows:
+
+<pre class="brush:java">
+configuration.setPluginFactory(new com.dsl.transformation.SourcePreProcessor())
+</pre>
+
+We can simply set the SourcePreProcessor on the configuration as a PluginFactory. 
+</p>
+
+
+<h2>Export the Jar file</h2>
+
+<p>
+With Eclipse, you can export the project as a Jar file by selecting:
+
+<pre class="brush:shell">Export > Java > JAR File</pre>
+
+You don't need the libs folder because Jar files that are included in another Jar file aren't available on the class path. What you can do is to create a Manifest.MF file with the following class path entries:
+
+<pre class="brush:java">
+Class-Path: libs/antlr-4.4-complete.jar libs/hamcrest-core-1.3.jar
+</pre>
+
+This makes sure that if you run the jar file from the right location, the required libraries are on the class path. This is not bullet proof production code, but for testing it is sufficient.
+</p>
+<p>
+Now that you exported a Jar file all you need to do is to include the Jar file with your AST Transformations on the class path and Groovy will automatically understand what to do. The DSL script is invoked from the command line with the following command:
+
+<pre class="brush:shell">
+groovy -cp Cymbol.jar --configscript config.groovy tests\test1.cymbol
+</pre>
+</p>
+<p>
+You can also invoke the groovyc compile and compile your DSL script into a Java class. The command is the same, really:
+
+<pre class="brush:shell">
+groovyc -cp Cymbol.jar --configscript config.groovy tests\test1.cymbol
+</pre>
+</p>
+<p>
+In case you have a DSL in which you have customers that write scripts with it, you can now also compile it with a build system such as Ant or Gradle and package the results in a JAR file and deliver it to a production system.
+</p>
+
+<h2>Conclusion</h2>
+
+<p>
+In the previous sections you have seen a technique to develop a DSL and execute it as a Groovy script, or to compile the DSL script into a Java class file. It requires quite a lot of groovy's DSL features, but it is a good show case on what you can do with Groovy's superb DSL features and how to succesfully apply them. And I didn't even write a single line of Groovy code!
+</p>
+<p>
+The techniques that have been covered are:
+
+<ul>
+<li>Generate an ANTLR Parser from a grammar file</li>
+<li>Create a Groovy source pre-processor</li>
+<li>Create Global AST Transformations that delegate to a helper class for easy implementations</li>
+<li>Execute a DSL script with a custom CompilerConfiguration with embedded Groovy or from the command line</li>
+<li>Compile a DSL script with an ANTLR grammar into a Java .class file with a build system</li>
+</ul>
+</p>
+<p>
+That was a lot of ground to cover. One open point remains tool support. Now that I have my DSL, can I at least have syntax high-lighting? I hope to return to this, and other topics involving DSL design and development, in a next article.
+</p>
+
+
+
+
